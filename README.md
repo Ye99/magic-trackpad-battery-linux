@@ -68,6 +68,12 @@ journalctl --user -u trackpad-battery.service
 
 If the trackpad isn't connected over Bluetooth, the plain command prints an error and exits with status 1. With `--notify` it does nothing and exits 0, so the timer doesn't log failures while the trackpad is away.
 
+### Sleep and battery use
+
+The timer never wakes a sleeping computer, so it won't drain a laptop's battery. It leaves `WakeSystem=` at its default of `no`.
+
+The 8-hour interval (`OnUnitActiveSec=8h`) counts only time the computer is awake, because that clock stops during sleep. So a check runs after about 8 hours of awake time since the last one, plus 2 minutes after each login.
+
 ### Change the threshold or schedule
 
 - **Threshold:** edit `--threshold 50` in `trackpad-battery.service`.
