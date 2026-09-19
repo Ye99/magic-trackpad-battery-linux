@@ -1,65 +1,79 @@
 #!/usr/bin/env python3
-"""Read the Apple Magic Trackpad 2 battery level directly over Bluetooth.
-
-The kernel only polls this trackpad's battery over USB, so over Bluetooth
-upower shows a stale value. This asks the device for HID input report 0x90
-(flags, percent) through hidraw instead.
-
-Usage: trackpad-battery [--notify] [--threshold N]
-"""
-import argparse, array, fcntl, glob, os, subprocess, sys
+"""Read the Apple Magic Trackpad 2 battery level directly over Bluetooth."""
+import argparse
+import array
+import fcntl
+import glob
+import os
+import subprocess
+import sys
 
 HID_ID = "0005:0000004C:00000265"  # Bluetooth, Apple, Magic Trackpad 2
+
 REPORT_ID = 0x90
+CHARGING_FLAG = 0x02
 
 
-def find_hidraw():
-    for uevent in glob.glob("/sys/class/hidraw/hidraw*/device/uevent"):
+def parse_report(data):
+    """Decode input report 0x90: [report id, flags, percent]."""
+    if len(data) < 3 or data[0] != REPORT_ID:
+        raise ValueError(f"unexpected report: {list(data)}")
+    return data[2], bool(data[1] & CHARGING_FLAG)
+
+
+def find_hidraw(sys_root="/sys"):
+    """Return the /dev/hidrawN path of the Bluetooth trackpad, or None."""
+    for uevent in sorted(glob.glob(os.path.join(sys_root, "class/hidraw/hidraw*/device/uevent"))):
         with open(uevent) as f:
-            if f"HID_ID={HID_ID}" in f.read():
-                return "/dev/" + uevent.split("/")[4]
+            if f"HID_ID={HID_ID}" in f.read().splitlines():
+                return "/dev/" + uevent.split(os.sep)[-3]
     return None
 
 
-def read_battery(dev):
-    # HIDIOCGINPUT(len) = _IOC(_IOC_READ|_IOC_WRITE, 'H', 0x0A, len)
+def read_report(dev, ioctl=fcntl.ioctl):
+    """Ask the device for input report 0x90 via HIDIOCGINPUT.
+
+    The report is an input report; requesting it as a feature report fails with EIO.
+    """
     buf = array.array("B", [REPORT_ID] + [0] * 7)
-    req = (3 << 30) | (len(buf) << 16) | (ord("H") << 8) | 0x0A
+    request = (3 << 30) | (len(buf) << 16) | (ord("H") << 8) | 0x0A  # HIDIOCGINPUT(len)
     fd = os.open(dev, os.O_RDWR)
     try:
-        n = fcntl.ioctl(fd, req, buf, True)
+        n = ioctl(fd, request, buf, True)
     finally:
         os.close(fd)
-    if n < 3 or buf[0] != REPORT_ID:
-        raise OSError(f"unexpected report: {list(buf[:n])}")
-    charging = bool(buf[1] & 0x02)
-    return buf[2], charging
+    return bytes(buf[:n])
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--notify", action="store_true",
-                    help="send a desktop notification if at or below threshold")
-    ap.add_argument("--threshold", type=int, default=50)
-    args = ap.parse_args()
+def send_notification(title, body, run=subprocess.run):
+    run(["notify-send", "-u", "critical", "-i", "battery-caution", title, body])
 
-    dev = find_hidraw()
+
+def main(argv=None, find=find_hidraw, read=read_report, notify=send_notification):
+    parser = argparse.ArgumentParser(description="Print the Magic Trackpad battery level.")
+    parser.add_argument("--notify", action="store_true",
+                        help="send a desktop notification if at or below the threshold")
+    parser.add_argument("--threshold", type=int, default=50,
+                        help="notification threshold in percent (default: 50)")
+    args = parser.parse_args(argv)
+
+    dev = find()
     if not dev:
-        if not args.notify:
-            print("Magic Trackpad not connected over Bluetooth", file=sys.stderr)
-        return 0 if args.notify else 1
+        if args.notify:
+            return 0
+        print("Magic Trackpad not connected over Bluetooth", file=sys.stderr)
+        return 1
     try:
-        pct, charging = read_battery(dev)
-    except OSError as e:
+        percent, charging = parse_report(read(dev))
+    except (OSError, ValueError) as e:
         print(f"{dev}: {e}", file=sys.stderr)
         return 1
 
     if args.notify:
-        if pct <= args.threshold and not charging:
-            subprocess.run(["notify-send", "-u", "critical", "-i", "battery-caution",
-                            "Magic Trackpad battery low", f"{pct}% remaining"])
+        if percent <= args.threshold and not charging:
+            notify("Magic Trackpad battery low", f"{percent}% remaining")
     else:
-        print(f"{pct}%{' (charging)' if charging else ''}")
+        print(f"{percent}%{' (charging)' if charging else ''}")
     return 0
 
 

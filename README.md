@@ -1,5 +1,7 @@
 # Magic Trackpad battery on Linux (over Bluetooth)
 
+[![tests](https://github.com/Ye99/magic-trackpad-battery-linux/actions/workflows/tests.yml/badge.svg)](https://github.com/Ye99/magic-trackpad-battery-linux/actions/workflows/tests.yml)
+
 On Linux, the Apple Magic Trackpad 2's battery level is often wrong when the trackpad is connected over Bluetooth. GNOME, `upower` and `/sys/class/power_supply` can show something like **0% or 3%, Discharging**, with a critical-battery warning, while the trackpad is actually full or on a charger. Plug it in over USB and the same system suddenly shows 100%.
 
 This repo has a small script that asks the trackpad for its real battery level over Bluetooth, plus an optional systemd timer that warns you on the desktop when the battery is actually low.
@@ -83,6 +85,19 @@ systemctl --user restart trackpad-battery.timer
 - **`Permission denied` on `/dev/hidrawN`:** the udev rule isn't applied yet. Rerun `./install.sh`, or turn the trackpad off and on. `getfacl /dev/hidrawN` should list your user.
 - **`Magic Trackpad not connected over Bluetooth`:** check `bluetoothctl devices Connected`. Over USB, the kernel already reports the battery correctly, so this script isn't needed.
 - **Find the HID ID of a different device:** `grep -H HID_ID /sys/class/hidraw/*/device/uevent`.
+
+## Tests
+
+The tests use only the Python standard library and need no trackpad:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+- `tests/test_trackpad_battery.py` covers decoding the report, finding the device in a fake `/sys` tree, the exact `HIDIOCGINPUT` ioctl request, the command-line output and exit codes, and the notification rules (threshold, charging, not connected).
+- `tests/test_install.py` runs `install.sh` and `uninstall.sh` with a temporary `HOME` and fake `systemctl`, `sudo` and `udevadm`, so it doesn't change your system.
+
+The only part not covered is the real `ioctl` call on real hardware. Running `trackpad-battery` with the trackpad connected checks that.
 
 ## Uninstall
 
