@@ -1,0 +1,1 @@
+KERNEL=="hidraw*", KERNELS=="0005:004C:0265.*", TAG+="uaccess"

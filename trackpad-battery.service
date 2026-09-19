@@ -1,0 +1,6 @@
+[Unit]
+Description=Warn when the Magic Trackpad battery is low
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/trackpad-battery --notify --threshold 50
