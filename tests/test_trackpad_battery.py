@@ -1,3 +1,4 @@
+import errno
 import io
 import os
 import sys
@@ -152,6 +153,26 @@ class ReadReportTest(unittest.TestCase):
         # HIDIOCGINPUT(8) = _IOC(_IOC_READ|_IOC_WRITE, 'H', 0x0A, 8)
         self.assertEqual(calls, [(0xC008480A, bytes([0x90, 0, 0, 0, 0, 0, 0, 0]), True)])
         self.assertEqual(data, bytes([0x90, 0x02, 64]))
+
+    def test_old_kernel_without_hidiocginput_names_required_version(self):
+        for code in (errno.EINVAL, errno.ENOTTY):
+            def fake_ioctl(fd, request, buf, mutate):
+                raise OSError(code, os.strerror(code))
+
+            with tempfile.NamedTemporaryFile() as dev:
+                with self.assertRaises(OSError) as ctx:
+                    tb.read_report(dev.name, ioctl=fake_ioctl)
+            self.assertEqual(ctx.exception.errno, code)
+            self.assertIn("Linux 5.11 or newer", str(ctx.exception))
+
+    def test_other_ioctl_errors_pass_through_unchanged(self):
+        def fake_ioctl(fd, request, buf, mutate):
+            raise OSError(errno.EIO, "Input/output error")
+
+        with tempfile.NamedTemporaryFile() as dev:
+            with self.assertRaises(OSError) as ctx:
+                tb.read_report(dev.name, ioctl=fake_ioctl)
+        self.assertEqual(str(ctx.exception), "[Errno 5] Input/output error")
 
     def test_missing_device_raises_oserror(self):
         with self.assertRaises(OSError):
