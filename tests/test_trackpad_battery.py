@@ -1,4 +1,5 @@
 import errno
+import fnmatch
 import io
 import os
 import subprocess
@@ -9,6 +10,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import trackpad_battery as tb  # noqa: E402
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 class ParseReportTest(unittest.TestCase):
@@ -50,12 +53,28 @@ class FindHidrawTest(unittest.TestCase):
         make_hidraw(self.sys_root, "hidraw8", "0005:0000004C:00000265")
         self.assertEqual(tb.find_hidraw(self.sys_root), "/dev/hidraw8")
 
+    def test_finds_usb_c_magic_trackpad_over_bluetooth(self):
+        make_hidraw(self.sys_root, "hidraw4", "0005:0000004C:00000324")
+        self.assertEqual(tb.find_hidraw(self.sys_root), "/dev/hidraw4")
+
     def test_ignores_trackpad_connected_over_usb(self):
         make_hidraw(self.sys_root, "hidraw3", "0003:000005AC:00000265")
         self.assertIsNone(tb.find_hidraw(self.sys_root))
 
     def test_returns_none_when_no_hidraw_devices(self):
         self.assertIsNone(tb.find_hidraw(self.sys_root))
+
+
+class UdevRuleTest(unittest.TestCase):
+    def test_rule_grants_access_to_every_supported_trackpad(self):
+        with open(os.path.join(REPO, "70-magic-trackpad-battery.rules")) as f:
+            rule = f.read()
+        patterns = rule.split('KERNELS=="', 1)[1].split('"', 1)[0].split("|")
+        for hid_id in tb.HID_IDS:
+            bus, vendor, product = (int(part, 16) for part in hid_id.split(":"))
+            kernel_name = f"{bus:04X}:{vendor:04X}:{product:04X}.0007"
+            self.assertTrue(any(fnmatch.fnmatchcase(kernel_name, p) for p in patterns),
+                            f"{kernel_name} not matched by {patterns}")
 
 
 class CliTestCase(unittest.TestCase):
