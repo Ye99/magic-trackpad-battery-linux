@@ -52,7 +52,17 @@ def read_report(dev, ioctl=fcntl.ioctl):
 
 
 def send_notification(title, body, run=subprocess.run):
-    run(["notify-send", "-u", "critical", "-i", "battery-caution", title, body])
+    """Show a desktop notification. Return False, with a message on stderr, if it fails."""
+    try:
+        result = run(["notify-send", "-u", "critical", "-i", "battery-caution", title, body])
+    except FileNotFoundError:
+        print("notify-send not found; install it (libnotify-bin on Debian/Ubuntu, "
+              "libnotify on Fedora/Arch)", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(f"notify-send failed with exit status {result.returncode}", file=sys.stderr)
+        return False
+    return True
 
 
 def main(argv=None, find=find_hidraw, read=read_report, notify=send_notification):
@@ -77,7 +87,8 @@ def main(argv=None, find=find_hidraw, read=read_report, notify=send_notification
 
     if args.notify:
         if percent <= args.threshold and not charging:
-            notify("Magic Trackpad battery low", f"{percent}% remaining")
+            if not notify("Magic Trackpad battery low", f"{percent}% remaining"):
+                return 1
     else:
         print(f"{percent}%{' (charging)' if charging else ''}")
     return 0
