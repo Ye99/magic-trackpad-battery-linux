@@ -14,6 +14,11 @@ HID_IDS = (  # Bluetooth, Apple vendor ID; keep in sync with 70-magic-trackpad-b
     "0005:0000004C:00000324",  # Magic Trackpad (USB-C)
 )
 
+# Errors meaning the trackpad disconnected or didn't answer. With --notify these are
+# treated like "not connected", so the timer doesn't log a failure.
+GONE_ERRNOS = {errno.ENOENT, errno.ENODEV, errno.ENXIO, errno.ETIMEDOUT,
+               errno.EHOSTDOWN, errno.ENOTCONN}
+
 REPORT_ID = 0x90
 CHARGING_FLAG = 0x02
 
@@ -105,6 +110,8 @@ def main(argv=None, find=find_trackpads, read=read_report, notify=send_notificat
         try:
             percent, charging = parse_report(read(dev))
         except (OSError, ValueError) as e:
+            if args.notify and getattr(e, "errno", None) in GONE_ERRNOS:
+                continue
             print(f"{dev}: {e}", file=sys.stderr)
             status = 1
             continue
