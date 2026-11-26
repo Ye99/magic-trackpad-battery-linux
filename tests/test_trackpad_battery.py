@@ -33,14 +33,16 @@ class ParseReportTest(unittest.TestCase):
             tb.parse_report(bytes([0x90, 0x00]))
 
 
-def make_hidraw(sys_root, name, hid_id):
+def make_hidraw(sys_root, name, hid_id, uniq=None):
     device = os.path.join(sys_root, "class", "hidraw", name, "device")
     os.makedirs(device)
     with open(os.path.join(device, "uevent"), "w") as f:
         f.write(f"DRIVER=magicmouse\nHID_ID={hid_id}\nHID_NAME=Magic Trackpad\n")
+        if uniq:
+            f.write(f"HID_UNIQ={uniq}\n")
 
 
-class FindHidrawTest(unittest.TestCase):
+class FindTrackpadsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.sys_root = self.tmp.name
@@ -48,21 +50,38 @@ class FindHidrawTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def paths(self):
+        return [dev for dev, _ in tb.find_trackpads(self.sys_root)]
+
     def test_finds_bluetooth_trackpad_among_other_devices(self):
         make_hidraw(self.sys_root, "hidraw2", "0003:0000046D:0000C52B")
         make_hidraw(self.sys_root, "hidraw8", "0005:0000004C:00000265")
-        self.assertEqual(tb.find_hidraw(self.sys_root), "/dev/hidraw8")
+        self.assertEqual(self.paths(), ["/dev/hidraw8"])
 
     def test_finds_usb_c_magic_trackpad_over_bluetooth(self):
         make_hidraw(self.sys_root, "hidraw4", "0005:0000004C:00000324")
-        self.assertEqual(tb.find_hidraw(self.sys_root), "/dev/hidraw4")
+        self.assertEqual(self.paths(), ["/dev/hidraw4"])
+
+    def test_finds_every_trackpad_in_numeric_order(self):
+        make_hidraw(self.sys_root, "hidraw10", "0005:0000004C:00000265")
+        make_hidraw(self.sys_root, "hidraw2", "0005:0000004C:00000324")
+        self.assertEqual(self.paths(), ["/dev/hidraw2", "/dev/hidraw10"])
+
+    def test_labels_trackpad_with_name_and_bluetooth_address(self):
+        make_hidraw(self.sys_root, "hidraw3", "0005:0000004C:00000265", uniq="aa:bb:cc:dd:ee:ff")
+        self.assertEqual(tb.find_trackpads(self.sys_root),
+                         [("/dev/hidraw3", "Magic Trackpad (aa:bb:cc:dd:ee:ff)")])
+
+    def test_label_without_address_is_the_name(self):
+        make_hidraw(self.sys_root, "hidraw3", "0005:0000004C:00000265")
+        self.assertEqual(tb.find_trackpads(self.sys_root), [("/dev/hidraw3", "Magic Trackpad")])
 
     def test_ignores_trackpad_connected_over_usb(self):
         make_hidraw(self.sys_root, "hidraw3", "0003:000005AC:00000265")
-        self.assertIsNone(tb.find_hidraw(self.sys_root))
+        self.assertEqual(self.paths(), [])
 
-    def test_returns_none_when_no_hidraw_devices(self):
-        self.assertIsNone(tb.find_hidraw(self.sys_root))
+    def test_returns_empty_list_when_no_hidraw_devices(self):
+        self.assertEqual(self.paths(), [])
 
 
 class UdevRuleTest(unittest.TestCase):
@@ -79,19 +98,29 @@ class UdevRuleTest(unittest.TestCase):
 
 class CliTestCase(unittest.TestCase):
     def run_main(self, argv, report=None, device="/dev/hidraw8", read_error=None,
-                 notify_ok=True):
+                 notify_ok=True, devices=None, reports=None):
+        """Run main() against fake trackpads.
+
+        By default there is one trackpad, `device`, answering `report` or raising
+        `read_error`. Pass `devices` [(path, label)] and `reports` {path: bytes or
+        exception} for several.
+        """
         self.notifications = []
         self.read_from = []
+        if devices is None:
+            devices = [] if device is None else [(device, "Magic Trackpad")]
+            reports = {device: read_error or report}
 
         def read(dev):
             self.read_from.append(dev)
-            if read_error:
-                raise read_error
-            return report
+            result = reports[dev]
+            if isinstance(result, Exception):
+                raise result
+            return result
 
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            code = tb.main(argv, find=lambda: device, read=read,
+            code = tb.main(argv, find=lambda: devices, read=read,
                            notify=lambda *msg: self.notifications.append(msg) or notify_ok)
         return code, out.getvalue(), err.getvalue()
 
@@ -124,6 +153,32 @@ class MainTest(CliTestCase):
         code, _, err = self.run_main([], report=bytes([0x91, 0, 100]))
         self.assertEqual(code, 1)
         self.assertIn("unexpected report", err)
+
+
+class SeveralTrackpadsTest(CliTestCase):
+    DEVICES = [("/dev/hidraw2", "Magic Trackpad (aa:aa)"), ("/dev/hidraw10", "Magic Trackpad (bb:bb)")]
+
+    def test_prints_each_trackpad_with_its_label(self):
+        code, out, _ = self.run_main([], devices=self.DEVICES, reports={
+            "/dev/hidraw2": bytes([0x90, 0, 100]), "/dev/hidraw10": bytes([0x90, 0x02, 40])})
+        self.assertEqual((code, out), (0, "Magic Trackpad (aa:aa): 100%\n"
+                                          "Magic Trackpad (bb:bb): 40% (charging)\n"))
+
+    def test_one_failure_does_not_hide_the_other_trackpad(self):
+        code, out, err = self.run_main([], devices=self.DEVICES, reports={
+            "/dev/hidraw2": OSError(13, "Permission denied"), "/dev/hidraw10": bytes([0x90, 0, 80])})
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "Magic Trackpad (bb:bb): 80%\n")
+        self.assertIn("/dev/hidraw2", err)
+
+    def test_notifies_for_each_low_trackpad_by_label(self):
+        code, _, _ = self.run_main(["--notify", "--threshold", "20"], devices=self.DEVICES,
+                                   reports={"/dev/hidraw2": bytes([0x90, 0, 10]),
+                                            "/dev/hidraw10": bytes([0x90, 0, 90])})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.notifications), 1)
+        self.assertIn("Magic Trackpad (aa:aa)", " ".join(self.notifications[0]))
+        self.assertIn("10%", " ".join(self.notifications[0]))
 
 
 class NotifyTest(CliTestCase):
