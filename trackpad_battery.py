@@ -124,5 +124,6 @@ def main(argv=None, find=find_trackpads, read=read_report, notify=send_notificat
             print(f"{prefix}{percent}%{' (charging)' if charging else ''}")
     return status
 
+
 if __name__ == "__main__":
     sys.exit(main())
