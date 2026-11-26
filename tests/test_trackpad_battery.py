@@ -1,6 +1,7 @@
 import errno
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -58,7 +59,8 @@ class FindHidrawTest(unittest.TestCase):
 
 
 class CliTestCase(unittest.TestCase):
-    def run_main(self, argv, report=None, device="/dev/hidraw8", read_error=None):
+    def run_main(self, argv, report=None, device="/dev/hidraw8", read_error=None,
+                 notify_ok=True):
         self.notifications = []
         self.read_from = []
 
@@ -71,7 +73,7 @@ class CliTestCase(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             code = tb.main(argv, find=lambda: device, read=read,
-                           notify=lambda *msg: self.notifications.append(msg))
+                           notify=lambda *msg: self.notifications.append(msg) or notify_ok)
         return code, out.getvalue(), err.getvalue()
 
 
@@ -132,6 +134,10 @@ class NotifyTest(CliTestCase):
         code, out, err = self.run_main(["--notify"], device=None)
         self.assertEqual((code, out, err, self.notifications), (0, "", "", []))
 
+    def test_failed_notification_is_an_error(self):
+        code, _, _ = self.run_main(["--notify"], report=bytes([0x90, 0, 10]), notify_ok=False)
+        self.assertEqual(code, 1)
+
     def test_read_failure_is_still_an_error(self):
         code, _, err = self.run_main(["--notify"], read_error=OSError(5, "Input/output error"))
         self.assertEqual((code, self.notifications), (1, []))
@@ -182,9 +188,31 @@ class ReadReportTest(unittest.TestCase):
 class SendNotificationTest(unittest.TestCase):
     def test_runs_notify_send_as_critical(self):
         commands = []
-        tb.send_notification("Title", "Body", run=lambda cmd: commands.append(cmd))
+
+        def run(cmd):
+            commands.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        self.assertTrue(tb.send_notification("Title", "Body", run=run))
         self.assertEqual(commands, [["notify-send", "-u", "critical", "-i", "battery-caution",
                                      "Title", "Body"]])
+
+    def test_missing_notify_send_is_reported_not_raised(self):
+        def run(cmd):
+            raise FileNotFoundError(2, "No such file or directory", "notify-send")
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertFalse(tb.send_notification("Title", "Body", run=run))
+        self.assertIn("notify-send not found", err.getvalue())
+
+    def test_notify_send_failure_is_reported(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            ok = tb.send_notification("Title", "Body",
+                                      run=lambda cmd: subprocess.CompletedProcess(cmd, 1))
+        self.assertFalse(ok)
+        self.assertIn("notify-send failed with exit status 1", err.getvalue())
 
 
 if __name__ == "__main__":
