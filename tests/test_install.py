@@ -23,18 +23,20 @@ class ScriptTestCase(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(f'#!/bin/sh\necho "{name} $*" >> "$COMMAND_LOG"\n'
                         f'[ "{name} $1 $2" = "systemctl --user disable" ] && [ -n "$FAIL_DISABLE" ] && exit 1\n'
+                        f'[ "{name}" = "sudo" ] && [ -n "$FAIL_SUDO" ] && exit 1\n'
                         f'exit 0\n')
             os.chmod(path, 0o755)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_script(self, name, **env):
+    def run_script(self, name, expect_success=True, **env):
         result = subprocess.run(
             [os.path.join(REPO, name)], cwd=self.tmp.name, capture_output=True, text=True,
             env={**os.environ, "HOME": self.home, "COMMAND_LOG": self.log,
                  "PATH": self.bin + os.pathsep + os.environ["PATH"], **env})
-        self.assertEqual(result.returncode, 0, result.stderr)
+        if expect_success:
+            self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
     def commands(self):
@@ -77,6 +79,21 @@ class InstallTest(ScriptTestCase):
             [f"sudo install -m 0644 {rule} /etc/udev/rules.d/",
              "sudo udevadm control --reload",
              "sudo udevadm trigger --subsystem-match=hidraw"])
+
+    def test_installs_udev_rule_before_starting_timer(self):
+        self.run_script("install.sh")
+        commands = self.commands()
+        self.assertLess(commands.index("sudo udevadm trigger --subsystem-match=hidraw"),
+                        commands.index("systemctl --user enable --now trackpad-battery.timer"))
+
+    def test_failed_sudo_leaves_nothing_half_installed(self):
+        result = self.run_script("install.sh", expect_success=False, FAIL_SUDO="1")
+        self.assertNotEqual(result.returncode, 0)
+        for path in (self.home_path(".local", "bin", "trackpad-battery"),
+                     self.home_path(*UNITS, "trackpad-battery.service"),
+                     self.home_path(*UNITS, "trackpad-battery.timer")):
+            self.assertFalse(os.path.lexists(path), path)
+        self.assertNotIn("systemctl --user enable --now trackpad-battery.timer", self.commands())
 
     def test_running_twice_succeeds(self):
         self.run_script("install.sh")
