@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read the Apple Magic Trackpad 2 battery level directly over Bluetooth."""
+"""Read an Apple Magic Trackpad's battery level directly over Bluetooth."""
 import argparse
 import array
 import errno
@@ -9,7 +9,10 @@ import os
 import subprocess
 import sys
 
-HID_ID = "0005:0000004C:00000265"  # Bluetooth, Apple, Magic Trackpad 2
+HID_IDS = (  # Bluetooth, Apple vendor ID; keep in sync with 70-magic-trackpad-battery.rules
+    "0005:0000004C:00000265",  # Magic Trackpad 2 (Lightning)
+    "0005:0000004C:00000324",  # Magic Trackpad (USB-C)
+)
 
 REPORT_ID = 0x90
 CHARGING_FLAG = 0x02
@@ -26,7 +29,8 @@ def find_hidraw(sys_root="/sys"):
     """Return the /dev/hidrawN path of the Bluetooth trackpad, or None."""
     for uevent in sorted(glob.glob(os.path.join(sys_root, "class/hidraw/hidraw*/device/uevent"))):
         with open(uevent) as f:
-            if f"HID_ID={HID_ID}" in f.read().splitlines():
+            lines = f.read().splitlines()
+            if any(f"HID_ID={hid_id}" in lines for hid_id in HID_IDS):
                 return "/dev/" + uevent.split(os.sep)[-3]
     return None
 
