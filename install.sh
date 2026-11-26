@@ -7,13 +7,15 @@ dir="$(cd "$(dirname "$0")" && pwd)"
 bin="$HOME/.local/bin"
 units="$HOME/.config/systemd/user"
 
+# The udev rule comes first: the timer's first run needs it, and if sudo is
+# declined, nothing else has been set up yet.
+sudo install -m 0644 "$dir/70-magic-trackpad-battery.rules" /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=hidraw
+
 mkdir -p "$bin" "$units"
 ln -sfn "$dir/trackpad_battery.py" "$bin/trackpad-battery"
 ln -sfn "$dir/trackpad-battery.service" "$units/trackpad-battery.service"
 ln -sfn "$dir/trackpad-battery.timer" "$units/trackpad-battery.timer"
 systemctl --user daemon-reload
 systemctl --user enable --now trackpad-battery.timer
-
-sudo install -m 0644 "$dir/70-magic-trackpad-battery.rules" /etc/udev/rules.d/
-sudo udevadm control --reload
-sudo udevadm trigger --subsystem-match=hidraw
