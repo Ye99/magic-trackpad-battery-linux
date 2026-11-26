@@ -212,6 +212,21 @@ class NotifyTest(CliTestCase):
         code, _, _ = self.run_main(["--notify"], report=bytes([0x90, 0, 10]), notify_ok=False)
         self.assertEqual(code, 1)
 
+    def test_trackpad_gone_or_asleep_is_silent_success(self):
+        for code in (errno.ENOENT, errno.ENODEV, errno.ENXIO, errno.ETIMEDOUT,
+                     errno.EHOSTDOWN, errno.ENOTCONN):
+            result = self.run_main(["--notify"], read_error=OSError(code, os.strerror(code)))
+            self.assertEqual(result, (0, "", ""), errno.errorcode[code])
+
+    def test_permission_denied_is_still_an_error(self):
+        code, _, err = self.run_main(["--notify"], read_error=OSError(errno.EACCES, "Permission denied"))
+        self.assertEqual(code, 1)
+        self.assertIn("Permission denied", err)
+
+    def test_gone_trackpad_is_an_error_without_notify(self):
+        code, _, _ = self.run_main([], read_error=OSError(errno.ENODEV, "No such device"))
+        self.assertEqual(code, 1)
+
     def test_read_failure_is_still_an_error(self):
         code, _, err = self.run_main(["--notify"], read_error=OSError(5, "Input/output error"))
         self.assertEqual((code, self.notifications), (1, []))
