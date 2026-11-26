@@ -24,6 +24,7 @@ class ScriptTestCase(unittest.TestCase):
                 f.write(f'#!/bin/sh\necho "{name} $*" >> "$COMMAND_LOG"\n'
                         f'[ "{name} $1 $2" = "systemctl --user disable" ] && [ -n "$FAIL_DISABLE" ] && exit 1\n'
                         f'[ "{name}" = "sudo" ] && [ -n "$FAIL_SUDO" ] && exit 1\n'
+                        f'[ "{name}" = "systemctl" ] && [ -n "$NO_SYSTEMD" ] && exit 1\n'
                         f'exit 0\n')
             os.chmod(path, 0o755)
 
@@ -101,6 +102,17 @@ class InstallTest(ScriptTestCase):
         self.assert_links_to(self.home_path(".local", "bin", "trackpad-battery"),
                              "trackpad_battery.py")
 
+    def test_without_systemd_user_session_skips_timer(self):
+        result = self.run_script("install.sh", NO_SYSTEMD="1")
+        self.assert_links_to(self.home_path(".local", "bin", "trackpad-battery"),
+                             "trackpad_battery.py")
+        for unit in ("trackpad-battery.service", "trackpad-battery.timer"):
+            self.assertFalse(os.path.lexists(self.home_path(*UNITS, unit)), unit)
+        self.assertNotIn("systemctl --user enable --now trackpad-battery.timer", self.commands())
+        self.assertIn("sudo udevadm trigger --subsystem-match=hidraw", self.commands())
+        self.assertIn("No systemd user session", result.stdout + result.stderr)
+        self.assertIn("trackpad-battery --notify", result.stdout + result.stderr)
+
 
 class UninstallTest(ScriptTestCase):
     def test_removes_links(self):
@@ -117,6 +129,18 @@ class UninstallTest(ScriptTestCase):
         self.assertIn("systemctl --user disable --now trackpad-battery.timer", commands)
         self.assertIn("sudo rm -f /etc/udev/rules.d/70-magic-trackpad-battery.rules", commands)
         self.assertIn("sudo udevadm control --reload", commands)
+
+    def test_reapplies_udev_rules_after_removing_rule(self):
+        self.run_script("uninstall.sh")
+        commands = self.commands()
+        self.assertLess(commands.index("sudo udevadm control --reload"),
+                        commands.index("sudo udevadm trigger --subsystem-match=hidraw"))
+
+    def test_without_systemd_user_session_still_removes_everything(self):
+        self.run_script("install.sh", NO_SYSTEMD="1")
+        self.run_script("uninstall.sh", NO_SYSTEMD="1")
+        self.assertFalse(os.path.lexists(self.home_path(".local", "bin", "trackpad-battery")))
+        self.assertIn("sudo rm -f /etc/udev/rules.d/70-magic-trackpad-battery.rules", self.commands())
 
     def test_succeeds_when_nothing_is_installed(self):
         self.run_script("uninstall.sh", FAIL_DISABLE="1")
