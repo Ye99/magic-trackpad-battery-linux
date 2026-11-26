@@ -2,6 +2,7 @@
 """Read the Apple Magic Trackpad 2 battery level directly over Bluetooth."""
 import argparse
 import array
+import errno
 import fcntl
 import glob
 import os
@@ -40,6 +41,11 @@ def read_report(dev, ioctl=fcntl.ioctl):
     fd = os.open(dev, os.O_RDWR)
     try:
         n = ioctl(fd, request, buf, True)
+    except OSError as e:
+        if e.errno in (errno.EINVAL, errno.ENOTTY):
+            raise OSError(e.errno, f"the kernel rejected HIDIOCGINPUT ({e.strerror}); "
+                          f"this tool needs Linux 5.11 or newer, running {os.uname().release}") from e
+        raise
     finally:
         os.close(fd)
     return bytes(buf[:n])
