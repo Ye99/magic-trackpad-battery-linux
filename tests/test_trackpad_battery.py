@@ -251,7 +251,7 @@ class ReadReportTest(unittest.TestCase):
 
     def test_old_kernel_without_hidiocginput_names_required_version(self):
         for code in (errno.EINVAL, errno.ENOTTY):
-            def fake_ioctl(fd, request, buf, mutate):
+            def fake_ioctl(fd, request, buf, mutate, code=code):
                 raise OSError(code, os.strerror(code))
 
             with tempfile.NamedTemporaryFile() as dev:

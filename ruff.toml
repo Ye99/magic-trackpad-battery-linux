@@ -1,0 +1,5 @@
+line-length = 120
+
+[lint]
+# pycodestyle errors and warnings, pyflakes, and bugbear.
+select = ["E", "F", "W", "B"]
