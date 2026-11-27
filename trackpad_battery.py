@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""Read the Apple Magic Trackpad 2 battery level directly over Bluetooth."""
+"""Read an Apple Magic Trackpad's battery level directly over Bluetooth."""
 import argparse
 import array
+import errno
 import fcntl
 import glob
 import os
 import subprocess
 import sys
 
-HID_ID = "0005:0000004C:00000265"  # Bluetooth, Apple, Magic Trackpad 2
+HID_IDS = (  # Bluetooth, Apple vendor ID; keep in sync with 70-magic-trackpad-battery.rules
+    "0005:0000004C:00000265",  # Magic Trackpad 2 (Lightning)
+    "0005:0000004C:00000324",  # Magic Trackpad (USB-C)
+)
+
+# Errors meaning the trackpad disconnected or didn't answer. With --notify these are
+# treated like "not connected", so the timer doesn't log a failure.
+GONE_ERRNOS = {errno.ENOENT, errno.ENODEV, errno.ENXIO, errno.ETIMEDOUT,
+               errno.EHOSTDOWN, errno.ENOTCONN}
 
 REPORT_ID = 0x90
 CHARGING_FLAG = 0x02
@@ -21,13 +30,29 @@ def parse_report(data):
     return data[2], bool(data[1] & CHARGING_FLAG)
 
 
-def find_hidraw(sys_root="/sys"):
-    """Return the /dev/hidrawN path of the Bluetooth trackpad, or None."""
-    for uevent in sorted(glob.glob(os.path.join(sys_root, "class/hidraw/hidraw*/device/uevent"))):
+def _hidraw_number(uevent):
+    """Sort key: N of .../hidrawN/device/uevent, so hidraw10 comes after hidraw2."""
+    suffix = uevent.split(os.sep)[-3][len("hidraw"):]
+    return int(suffix) if suffix.isdigit() else -1
+
+
+def find_trackpads(sys_root="/sys"):
+    """Return [(/dev/hidrawN, label)] for every Bluetooth Magic Trackpad, in hidraw order.
+
+    The label is the device name plus its Bluetooth address when the kernel reports one.
+    """
+    found = []
+    uevents = glob.glob(os.path.join(sys_root, "class/hidraw/hidraw*/device/uevent"))
+    for uevent in sorted(uevents, key=_hidraw_number):
         with open(uevent) as f:
-            if f"HID_ID={HID_ID}" in f.read().splitlines():
-                return "/dev/" + uevent.split(os.sep)[-3]
-    return None
+            fields = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
+        if fields.get("HID_ID") not in HID_IDS:
+            continue
+        label = fields.get("HID_NAME") or "Magic Trackpad"
+        if fields.get("HID_UNIQ"):
+            label += f" ({fields['HID_UNIQ']})"
+        found.append(("/dev/" + uevent.split(os.sep)[-3], label))
+    return found
 
 
 def read_report(dev, ioctl=fcntl.ioctl):
@@ -40,16 +65,31 @@ def read_report(dev, ioctl=fcntl.ioctl):
     fd = os.open(dev, os.O_RDWR)
     try:
         n = ioctl(fd, request, buf, True)
+    except OSError as e:
+        if e.errno in (errno.EINVAL, errno.ENOTTY):
+            raise OSError(e.errno, f"the kernel rejected HIDIOCGINPUT ({e.strerror}); "
+                          f"this tool needs Linux 5.11 or newer, running {os.uname().release}") from e
+        raise
     finally:
         os.close(fd)
     return bytes(buf[:n])
 
 
 def send_notification(title, body, run=subprocess.run):
-    run(["notify-send", "-u", "critical", "-i", "battery-caution", title, body])
+    """Show a desktop notification. Return False, with a message on stderr, if it fails."""
+    try:
+        result = run(["notify-send", "-u", "critical", "-i", "battery-caution", title, body])
+    except FileNotFoundError:
+        print("notify-send not found; install it (libnotify-bin on Debian/Ubuntu, "
+              "libnotify on Fedora/Arch)", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(f"notify-send failed with exit status {result.returncode}", file=sys.stderr)
+        return False
+    return True
 
 
-def main(argv=None, find=find_hidraw, read=read_report, notify=send_notification):
+def main(argv=None, find=find_trackpads, read=read_report, notify=send_notification):
     parser = argparse.ArgumentParser(description="Print the Magic Trackpad battery level.")
     parser.add_argument("--notify", action="store_true",
                         help="send a desktop notification if at or below the threshold")
@@ -57,24 +97,32 @@ def main(argv=None, find=find_hidraw, read=read_report, notify=send_notification
                         help="notification threshold in percent (default: 50)")
     args = parser.parse_args(argv)
 
-    dev = find()
-    if not dev:
+    trackpads = find()
+    if not trackpads:
         if args.notify:
             return 0
         print("Magic Trackpad not connected over Bluetooth", file=sys.stderr)
         return 1
-    try:
-        percent, charging = parse_report(read(dev))
-    except (OSError, ValueError) as e:
-        print(f"{dev}: {e}", file=sys.stderr)
-        return 1
 
-    if args.notify:
-        if percent <= args.threshold and not charging:
-            notify("Magic Trackpad battery low", f"{percent}% remaining")
-    else:
-        print(f"{percent}%{' (charging)' if charging else ''}")
-    return 0
+    status = 0
+    for dev, label in trackpads:
+        prefix = f"{label}: " if len(trackpads) > 1 else ""
+        try:
+            percent, charging = parse_report(read(dev))
+        except (OSError, ValueError) as e:
+            if args.notify and getattr(e, "errno", None) in GONE_ERRNOS:
+                continue
+            print(f"{dev}: {e}", file=sys.stderr)
+            status = 1
+            continue
+
+        if args.notify:
+            if percent <= args.threshold and not charging:
+                if not notify("Magic Trackpad battery low", f"{prefix}{percent}% remaining"):
+                    status = 1
+        else:
+            print(f"{prefix}{percent}%{' (charging)' if charging else ''}")
+    return status
 
 
 if __name__ == "__main__":
